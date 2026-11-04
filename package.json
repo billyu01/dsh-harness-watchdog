@@ -1,6 +1,6 @@
 {
   "name": "dsh-harness-watchdog",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": false,
   "description": "DeepSeek Harness 插件：干预长任务的拆解与分段汇报，并在目标静默停住时自动救援。",
   "license": "MIT",
