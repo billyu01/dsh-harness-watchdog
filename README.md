@@ -11,6 +11,7 @@
 | **沉默过久** | 连续 12 次工具调用没有任何正文 | 注入提醒，要求说明「做到哪、还剩什么、为什么还没结束」 | `tools/post-execute` |
 | **计划陈旧** | 距上次写任务清单 ≥ 15 次工具调用（且全会话已 ≥ 20 次） | 注入提醒，要求用 `todo_write` 重写清单 | `tools/post-execute` |
 | **拦收轮（硬干预）** | 本轮已 ≥ 8 次工具调用、清单已 ≥ 15 次没更新，且这一轮即将结束 | 用 `agent.steer()` 把这一轮拉回来，清单不刷新就不让它结束 | `agent/turn-stopping` |
+| **收尾对账（硬干预）** | 模型在回复里**声称任务已完成**，但任务清单里还有未完成项 | 拦下这一轮，要求把清单改成真实状态；确实没做/有意不做的保持未完成并说明原因 | `agent/turn-stopping` |
 | **单轮过长** | 单轮 ≥ 60 步 | 提醒一次，要求先汇报再继续 | `tools/post-execute` |
 | **目标自动救援** | 目标因**轮次额度用尽**被框架写成「阻塞」 | 自动把额度改大再恢复，同一目标最多 3 次 | `goals` 服务 `edit` / `resume` |
 | **目标自动重新武装** | 目标「进行中」但自动续跑被悄悄停用 | 自动重新开启，同一目标最多 5 次 | `goals` 服务 `resume` |
@@ -86,6 +87,7 @@ curl -s http://127.0.0.1:3080/harness-watchdog/status | head -c 400
 | `planStaleToolCalls` / `planStaleCooldown` | 15 / 30 | 清单陈旧阈值与冷却 |
 | `longTurnSteps` | 60 | 单轮步数提醒阈值 |
 | `forcePlanMinToolCalls` / `forcePlanStaleToolCalls` | 8 / 15 | 拦收轮的门槛 |
+| `reconcileOnClaim` / `claimPatterns` | 开 / 内置措辞 | 收尾对账：判定「声称完成」的开关与措辞 |
 | `maxRescuesPerGoal` / `maxRearmsPerGoal` | 3 / 5 | 目标干预次数上限 |
 | `rescueMaxRounds` | 4096 | 轮次额度绝对上限 |
 

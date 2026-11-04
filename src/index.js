@@ -37,7 +37,7 @@ export const inject = ['webServer']
  * 插件版本。状态接口会把它带出来，用来确认「改了源码之后有没有真的热生效」——
  * 这个包不在 HMR 的监听目录里，改完源码后靠这个字段判断。
  */
-const WATCHDOG_VERSION = '0.3.0'
+const WATCHDOG_VERSION = '0.3.1'
 
 /** 状态保留多久没有活动就丢弃（毫秒）。 */
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000
@@ -271,6 +271,8 @@ export function apply(ctx, config = {}) {
       toolCallsThisTurn: snap.toolCallsThisTurn,
       toolCallsSinceTodo: snap.toolCallsSinceTodo,
       todoWritten: snap.todoWritten,
+      todoSummary: snap.todoSummary,
+      lastTurnText: snap.lastTurnText,
     })
     if (!decision) return
 
@@ -281,7 +283,14 @@ export function apply(ctx, config = {}) {
       }),
     )
     intervener.noteDone(decision)
-    entry.interventions.unshift(remember('force-plan', `第 ${decision.turn} 轮拦住收轮，要求先刷新任务清单`))
+    entry.interventions.unshift(
+      remember(
+        'force-plan',
+        decision.reason === 'claim-mismatch'
+          ? `第 ${decision.turn} 轮：声称完成但清单还有 ${decision.openItems} 项未完成，已拦下要求对账`
+          : `第 ${decision.turn} 轮拦住收轮，要求先刷新任务清单`,
+      ),
+    )
     entry.interventions.length = Math.min(entry.interventions.length, 10)
   })
 

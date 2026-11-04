@@ -394,3 +394,35 @@ test('配置 enabled: false 时整体不工作（留一个总开关）', async (
   const out = await ctx.postExecute({ agent, name: 'bash' }, () => ({ kind: 'continue' }))
   assert.equal(out.additionalContexts, undefined, '关掉之后不应该注入任何东西')
 })
+
+test('任务做完了但清单没更新：收轮时拦下并要求对账（真实事故回归）', () => {
+  const ctx = fakeCtx()
+  apply(ctx)
+  const agent = fakeAgent('s-claim')
+  ctx.fire('agent/status', { agent })
+  ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 39 } })
+  ctx.fire('session/event', agent.session, {
+    type: 'todo/write',
+    data: { todos: [
+      { content: '建分支', status: 'completed' },
+      { content: '打包', status: 'completed' },
+      { content: '校验压缩包', status: 'in_progress' },
+      { content: '合并推送', status: 'pending' },
+      { content: '交付说明', status: 'pending' },
+    ] },
+  })
+  // 之后又干了点活，但没再更新清单
+  for (let i = 0; i < 3; i += 1) {
+    ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
+  }
+  ctx.fire('session/event', agent.session, {
+    type: 'assistant/message',
+    data: { message: { content: [{ type: 'text', text: '进度：已完成 5 项 / 剩余 0 项' }] } },
+  })
+  ctx.fire('agent/turn-stopping', { agent, turn: 39 })
+
+  assert.equal(agent.steered.length, 1, '必须把这一轮拉回来对账')
+  const msg = agent.steered[0]
+  assert.equal(msg.source.summary, 'force-plan')
+  assert.match(msg.content[0].text, /还有 3 项没有标成完成/)
+})

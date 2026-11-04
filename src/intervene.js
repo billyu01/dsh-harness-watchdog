@@ -35,6 +35,13 @@ export const DEFAULT_INTERVENE = {
   forcePlanMinToolCalls: 8,
   /** 距上次写清单至少这么多次工具调用，才算「清单陈旧」 */
   forcePlanStaleToolCalls: 15,
+  /** 收尾对账：模型声称完成、但清单里还有未完成项时，是否拦下 */
+  reconcileOnClaim: true,
+  /** 判定「声称完成」用的措辞 */
+  claimPatterns: [
+    '全部完成', '已全部完成', '均已完成', '都已完成', '已经完成',
+    '已完成', '剩余 0', '剩余0', '完成 5 项', '完成了',
+  ],
 };
 
 export const DEFAULT_REASONS = {
@@ -133,27 +140,64 @@ export function createIntervener(userConfig = {}) {
     return null
   }
 
+  /** 清单里还有几项没完成 */
+  function openItems(summary) {
+    if (!summary || typeof summary !== 'object') return 0
+    const total = Number(summary.total) || 0
+    const done = Number(summary.done) || 0
+    return Math.max(0, total - done)
+  }
+
+  /** 模型有没有在正文里声称做完了 */
+  function claimsCompletion(text) {
+    if (!text || typeof text !== 'string') return false
+    return config.claimPatterns.some((p) => text.includes(p))
+  }
+
   /**
    * 收到「这一轮即将结束」时判断要不要拦。
-   * @param input - { sessionId, turn, toolCallsThisTurn, toolCallsSinceTodo, todoWritten }
+   * @param input - { sessionId, turn, toolCallsThisTurn, toolCallsSinceTodo, todoSummary, lastTurnText }
    */
   function decideTurnStopping(input) {
     if (!config.forcePlanRefresh) return null
     const { sessionId, turn } = input
     const thisTurn = input.toolCallsThisTurn ?? 0
     const sinceTodo = input.toolCallsSinceTodo ?? 0
-
     if (!sessionId || turn == null) return null
-    if (thisTurn < config.forcePlanMinToolCalls) return null
-    // 清单也要真的陈旧才值得拦：刚写过的清单不算。
-    if (sinceTodo < config.forcePlanStaleToolCalls) return null
 
     const k = `${sessionId}:${turn}`
     if (forcedTurns.has(k)) return null
 
+    const open = openItems(input.todoSummary)
+    const claim = claimsCompletion(input.lastTurnText)
+
+    // 规则甲（收尾对账）：清单里还有没完成的项，而模型的话里已经声称做完了。
+    // 这是「任务已经结束、界面上的任务状态却没更新」的直接原因。
+    if (config.reconcileOnClaim && open > 0 && claim) {
+      forcedTurns.add(k)
+      return {
+        kind: 'forcePlan',
+        reason: 'claim-mismatch',
+        sessionId,
+        turn,
+        toolCallsThisTurn: thisTurn,
+        toolCallsSinceTodo: sinceTodo,
+        openItems: open,
+        text:
+          `【看门狗】你在这一轮的回复里声称任务已经完成，但任务清单里还有 ${open} 项没有标成完成，` +
+          `界面上的任务状态会停在旧的样子。这一轮先不要结束：请立刻用 todo_write 把清单改成真实状态——` +
+          `真的做完的标 completed；确实没做或有意不做的保持未完成，并在回复里说明为什么。`,
+      }
+    }
+
+    // 规则乙（原有）：干了足够多的活而清单很久没更新。
+    if (thisTurn < config.forcePlanMinToolCalls) return null
+    if (sinceTodo < config.forcePlanStaleToolCalls) return null
+
     forcedTurns.add(k)
     return {
       kind: 'forcePlan',
+      reason: 'stale',
       sessionId,
       turn,
       toolCallsThisTurn: thisTurn,

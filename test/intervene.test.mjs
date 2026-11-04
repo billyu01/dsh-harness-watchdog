@@ -148,3 +148,75 @@ test('可以整体关闭动手能力', () => {
   assert.equal(iv.decideTurnStopping({ sessionId: 's', turn: 1, toolCallsThisTurn: 99, toolCallsSinceTodo: 99 }), null)
   assert.ok(iv.stats().skipped >= 2, '跳过次数应当被记账')
 })
+
+// ── 收尾对账：任务做完了但清单没更新 ──────────────────────────────
+
+test('声称完成但清单还有未完成项：拦下要求对账', () => {
+  const iv = createIntervener()
+  const d = iv.decideTurnStopping({
+    sessionId: 's',
+    turn: 39,
+    toolCallsThisTurn: 4,
+    toolCallsSinceTodo: 3,
+    todoSummary: { total: 5, done: 2, doing: 1 },
+    lastTurnText: '进度：已完成 5 项 / 剩余 0 项（包已构建校验、test 已推送）',
+  })
+  assert.ok(d, '这种矛盾必须拦下')
+  assert.equal(d.reason, 'claim-mismatch')
+  assert.equal(d.openItems, 3)
+  assert.match(d.text, /还有 3 项没有标成完成/)
+  assert.match(d.text, /先不要结束/)
+})
+
+test('声称完成且清单确实全都完成：不拦', () => {
+  const iv = createIntervener()
+  const d = iv.decideTurnStopping({
+    sessionId: 's',
+    turn: 1,
+    toolCallsThisTurn: 4,
+    toolCallsSinceTodo: 3,
+    todoSummary: { total: 5, done: 5, doing: 0 },
+    lastTurnText: '全部完成',
+  })
+  assert.equal(d, null)
+})
+
+test('清单还有未完成项，但模型没说完成：不拦（可能只是在等用户）', () => {
+  const iv = createIntervener()
+  const d = iv.decideTurnStopping({
+    sessionId: 's',
+    turn: 1,
+    toolCallsThisTurn: 4,
+    toolCallsSinceTodo: 3,
+    todoSummary: { total: 5, done: 2, doing: 1 },
+    lastTurnText: '包已经打好，等你上传测试后告诉我结果',
+  })
+  assert.equal(d, null)
+})
+
+test('没有清单时不会因为「声称完成」去拦', () => {
+  const iv = createIntervener()
+  const d = iv.decideTurnStopping({
+    sessionId: 's',
+    turn: 1,
+    toolCallsThisTurn: 3,
+    toolCallsSinceTodo: 3,
+    todoSummary: null,
+    lastTurnText: '已完成',
+  })
+  assert.equal(d, null)
+})
+
+test('原有的陈旧规则仍然生效（reason 为 stale）', () => {
+  const iv = createIntervener()
+  const d = iv.decideTurnStopping({
+    sessionId: 's',
+    turn: 2,
+    toolCallsThisTurn: 20,
+    toolCallsSinceTodo: 20,
+    todoSummary: { total: 3, done: 3, doing: 0 },
+    lastTurnText: '继续干活',
+  })
+  assert.ok(d)
+  assert.equal(d.reason, 'stale')
+})

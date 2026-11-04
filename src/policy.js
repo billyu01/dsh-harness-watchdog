@@ -21,6 +21,10 @@ export const DEFAULT_CONFIG = {
   planStaleCooldown: 30,
   /** 单轮步数超过此值提醒一次 */
   longTurnSteps: 60,
+  /** 收尾对账：模型说做完了但清单还有未完成项时，拦下并要求更新清单 */
+  reconcileOnClaim: true,
+  /** 保存最近一段正文的最大长度（用于判断「是否声称完成」） */
+  lastTextLimit: 800,
   /** 已用轮数达到上限的多少比例时预警 */
   goalBudgetWarnRatio: 0.8,
   /** 判定「自动续跑可能已停」的静默时长（毫秒） */
@@ -75,6 +79,8 @@ export function createWatcher(userConfig = {}) {
     longTurnRemindedTurn: null,
     planReminderCount: 0,
     longTurnReminderCount: 0,
+    /** 本轮最后一段正文，用于收尾对账 */
+    lastTurnText: '',
     /** 沉默检测：最近一次输出正文时的工具调用计数 / 最近一次沉默提醒的计数 */
     lastTextAtToolCalls: 0,
     lastSilenceReminderAtToolCalls: null,
@@ -145,6 +151,7 @@ export function createWatcher(userConfig = {}) {
         state.step = 0;
         state.turnStartedAt = now;
         state.turnHadText = false;
+        state.lastTurnText = '';
         state.toolCallsThisTurn = 0;
         break;
       }
@@ -160,6 +167,8 @@ export function createWatcher(userConfig = {}) {
           state.turnHadText = true;
           // 只要模型说了话，沉默计时就归零
           state.lastTextAtToolCalls = state.toolCalls;
+          // 记下本轮最后一段正文，收尾时要拿它和清单对账
+          state.lastTurnText = textOf(msg.content).slice(-config.lastTextLimit);
         }
         break;
       }
@@ -416,6 +425,7 @@ export function createWatcher(userConfig = {}) {
       toolCallsThisTurn: state.toolCallsThisTurn,
       todoWritten: state.todoWritten,
       todoSummary: state.todoSummary,
+      lastTurnText: state.lastTurnText,
       planReminderCount: state.planReminderCount,
       longTurnReminderCount: state.longTurnReminderCount,
       silenceReminderCount: state.silenceReminderCount,
