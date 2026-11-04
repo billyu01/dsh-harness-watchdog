@@ -28,12 +28,21 @@
 ```bash
 cd ~/.dsh/profiles/<你的 profile 名>
 
-# 1. 加依赖
-pnpm add github:billyu01/dsh-harness-watchdog
+# 1. 加依赖。两个参数必须带：
+#    --config.auto-install-peers=false ：DSH profile 不自动安装 peer 依赖；
+#        漏掉会去公共 registry 找 @deepseek-ai/* 那些不公开的包，直接 404 失败。
+#    --config.node-linker=hoisted      ：DSH profile 用的是扁平布局；
+#        漏掉会把包装进 .pnpm 隔离目录，插件解析不到。
+pnpm add -w github:billyu01/dsh-harness-watchdog \
+  --config.auto-install-peers=false \
+  --config.node-linker=hoisted
 
 # 2. 在 package.json 的 dsh.profile.bundles 里加上这个名字
 #    "dsh.profile.bundles": [ ..., "dsh-harness-watchdog" ]
 ```
+
+> 这两个参数是 Profile 的既定约定，不是本插件的特殊要求。改完 `dsh.profile.bundles`
+> 后 DSH 会重新组合插件，通常不用重启进程。
 
 包自带 `dsh.bundle.patch`，出现在 `dsh.profile.bundles` 后 DSH 会自动应用挂载行，不需要手工改 `cordis.patch.yml`。
 
