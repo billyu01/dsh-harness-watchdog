@@ -1,0 +1,46 @@
+{
+  "name": "dsh-harness-watchdog",
+  "version": "0.3.0",
+  "private": false,
+  "description": "DeepSeek Harness 插件：干预长任务的拆解与分段汇报，并在目标静默停住时自动救援。",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/index.js",
+    "src/policy.js",
+    "src/intervene.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/policy.test.mjs test/intervene.test.mjs test/host.test.mjs"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "plugin",
+    "watchdog",
+    "agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/billyu01/dsh-harness-watchdog.git"
+  },
+  "bugs": {
+    "url": "https://github.com/billyu01/dsh-harness-watchdog/issues"
+  },
+  "homepage": "https://github.com/billyu01/dsh-harness-watchdog#readme",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
