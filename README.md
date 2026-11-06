@@ -20,44 +20,50 @@
 
 ## 安装
 
-要求：DSH 0.2.x，profile 机制可用的环境。
+要求：DSH 0.2.x 或更新版本，插件页可用。
 
-### 方式一：从 GitHub 安装（推荐）
+### 方式一：在插件页安装（推荐）
 
-在 DSH profile 目录执行：
+1. 打开**侧边栏 → 插件 → 添加插件**。
+2. 在「包名或地址」里填入本仓库地址：
+
+   ```
+   https://github.com/billyu01/dsh-harness-watchdog
+   ```
+
+   填 pnpm 的等价写法 `github:billyu01/dsh-harness-watchdog` 也可以。
+3. 点「安装」，等进度条跑完。
+
+装完 DSH 会自己做完三件事：把包下载进当前 profile 的依赖、把包名写进
+`dsh.profile.bundles`、应用包内自带的挂载行。不用手工改 `package.json`，
+也不用手工改 `cordis.patch.yml`。页面如果提示需要重启，重启一次 DSH 就好。
+
+> 「安装源」那一栏只在输入 npm 包名时才起作用，填 GitHub 地址时用不上。
+
+### 方式二：用 DSH 命令安装
+
+不方便用界面时，用 DSH 自带的命令，它和插件页走同一套安装逻辑：
 
 ```bash
-cd ~/.dsh/profiles/<你的 profile 名>
-
-# 1. 加依赖。两个参数必须带：
-#    --config.auto-install-peers=false ：DSH profile 不自动安装 peer 依赖；
-#        漏掉会去公共 registry 找 @deepseek-ai/* 那些不公开的包，直接 404 失败。
-#    --config.node-linker=hoisted      ：DSH profile 用的是扁平布局；
-#        漏掉会把包装进 .pnpm 隔离目录，插件解析不到。
-pnpm add -w github:billyu01/dsh-harness-watchdog \
-  --config.auto-install-peers=false \
-  --config.node-linker=hoisted
-
-# 2. 在 package.json 的 dsh.profile.bundles 里加上这个名字
-#    "dsh.profile.bundles": [ ..., "dsh-harness-watchdog" ]
+dsh plugin --profile desktop add github:billyu01/dsh-harness-watchdog
 ```
 
-> 这两个参数是 Profile 的既定约定，不是本插件的特殊要求。改完 `dsh.profile.bundles`
-> 后 DSH 会重新组合插件，通常不用重启进程。
+`desktop` 换成你自己的 profile 名，也就是 `~/.dsh/profiles/` 下的目录名。
 
-包自带 `dsh.bundle.patch`，出现在 `dsh.profile.bundles` 后 DSH 会自动应用挂载行，不需要手工改 `cordis.patch.yml`。
+### 方式三：手工挂载（旧版本兜底）
 
-也可以直接在 DSH 的**侧边栏 → 插件**页里安装，来源填本地目录或仓库地址。
-
-### 方式二：手工挂载
-
-如果你的 DSH 版本不支持组合包，把包放到能解析的位置，然后在 profile 的 `cordis.patch.yml` 里加一行：
+如果 DSH 版本既没有插件页，也不支持组合包，把包放到能解析的位置，再在 profile 的
+`cordis.patch.yml` 里加一行：
 
 ```yaml
 - insert:
     - id: harness-watchdog
       name: dsh-harness-watchdog
 ```
+
+> 旧版文档要求手工 `pnpm add` 时带 `--config.auto-install-peers=false` 和
+> `--config.node-linker=hoisted` 两个参数。这两个设置现在由 DSH 初始化 profile 时
+> 自己写进 `pnpm-workspace.yaml`，无论走插件页还是 `dsh plugin add` 都不用再传。
 
 ## 停用
 
