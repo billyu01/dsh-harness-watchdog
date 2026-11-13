@@ -38,7 +38,7 @@ export const inject = ['webServer']
  * 插件版本。状态接口会把它带出来，用来确认「改了源码之后有没有真的热生效」——
  * 这个包不在 HMR 的监听目录里，改完源码后靠这个字段判断。
  */
-const WATCHDOG_VERSION = '0.3.2'
+const WATCHDOG_VERSION = '0.3.3'
 
 /** 状态保留多久没有活动就丢弃（毫秒）。 */
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000
@@ -270,9 +270,11 @@ export function apply(ctx, config = {}) {
       // 上下文压力过高时不再往里塞软提醒：每条提醒都会永久留在上下文里，
       // 还会引来一段模型回应，越满越应该闭嘴。动手之后必须说明的通知保留。
       const pressure = contextPressureRatio(ctx, session)
+      // 只在上下文真的快撑爆时才闭嘴（默认 90%）；平时照常提醒，
+      // 否则长任务跑到中后段会整段失声，插件就白装了。
       const softStop = Number.isFinite(config.contextPressureSoftStop)
         ? config.contextPressureSoftStop
-        : 0.75
+        : 0.9
       const keep =
         pressure !== null && pressure >= softStop
           ? pending.filter((action) => action.kind !== 'remind')

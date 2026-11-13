@@ -37,7 +37,7 @@ test('长时间不写清单：会提醒，而且文案里给出具体步数', ()
   const w = createWatcher();
   const actions = run(w, [
     { type: 'turn/start', data: { turn: 1 }, time: 1 },
-    ...manyToolCalls(42),
+    ...manyToolCalls(22),
   ]);
   const plan = actions.filter((a) => a.rule === 'plan-stale');
   assert.equal(plan.length, 1, '应当只提醒一次');
@@ -53,7 +53,7 @@ test('写过清单后再陈旧：提醒文案区分「未更新」', () => {
   const actions = run(w, [
     { type: 'turn/start', data: { turn: 1 }, time: 1 },
     { type: 'todo/write', data: { todos: [{ content: '甲', status: 'in_progress' }] }, time: 2 },
-    ...manyToolCalls(42, 1),
+    ...manyToolCalls(22, 1),
   ]);
   const plan = actions.filter((a) => a.rule === 'plan-stale');
   assert.equal(plan.length, 1);
@@ -64,9 +64,9 @@ test('清单刷新后计数清零：短短几步不会立刻又提醒', () => {
   const w = createWatcher();
   const actions = run(w, [
     { type: 'turn/start', data: { turn: 1 }, time: 1 },
-    ...manyToolCalls(42),
+    ...manyToolCalls(20),
     { type: 'todo/write', data: { todos: [] }, time: 2 },
-    ...manyToolCalls(5, 60),
+    ...manyToolCalls(5, 40),
   ]);
   assert.equal(actions.filter((a) => a.rule === 'plan-stale').length, 1);
   assert.equal(w.snapshot().toolCallsSinceTodo, 5);
@@ -241,17 +241,17 @@ test('默认阈值互不矛盾', () => {
   assert.ok(DEFAULT_CONFIG.planStaleCooldown > DEFAULT_CONFIG.planStaleToolCalls);
 });
 
-test('沉默过久：连续 20 次工具调用没有正文就提醒一次', () => {
+test('沉默过久：连续 12 次工具调用没有正文就提醒一次', () => {
   const w = createWatcher();
   const actions = run(w, [
     { type: 'turn/start', data: { turn: 1 }, time: 1 },
-    ...manyToolCalls(19),
+    ...manyToolCalls(11),
   ]);
-  assert.equal(actions.filter((a) => a.rule === 'silence').length, 0, '19 次还不该提醒');
+  assert.equal(actions.filter((a) => a.rule === 'silence').length, 0, '11 次还不该提醒');
 
-  const more = run(w, manyToolCalls(1, 20));
+  const more = run(w, manyToolCalls(1, 12));
   const s = more.filter((a) => a.rule === 'silence');
-  assert.equal(s.length, 1, '第 20 次应当提醒');
+  assert.equal(s.length, 1, '第 12 次应当提醒');
   assert.equal(s[0].kind, 'remind');
   assert.equal(s[0].target, 'next-step');
   assert.equal(s[0].wakeup, false, '不该强行唤醒新轮');
@@ -279,13 +279,13 @@ test('沉默提醒有冷却，不会每步都刷', () => {
     ...manyToolCalls(40),
   ]);
   const n = actions.filter((a) => a.rule === 'silence').length;
-  // 阈值 20、冷却 20、每轮上限 2：40 次调用里正好在第 20、第 40 次各提醒一次
-  assert.equal(n, 2, `40 次工具调用里的沉默提醒应当是 2 次，实际 ${n}`);
+  // 阈值 12、冷却 12：40 次调用里在第 12、24、36 次各提醒一次
+  assert.equal(n, 3, `40 次工具调用里的沉默提醒应当是 3 次，实际 ${n}`);
 });
 
 // ── 上下文膨胀防线：软提醒的两道闸门 + 压缩后不补旧账 ──────────────────
 
-test('每轮软提醒有上限：一轮里最多 3 条', () => {
+test('每轮软提醒有上限：三类各自受限，加起来不超过总闸', () => {
   const w = createWatcher();
   const actions = run(w, [
     { type: 'turn/start', data: { turn: 1 }, time: 1 },
@@ -294,11 +294,31 @@ test('每轮软提醒有上限：一轮里最多 3 条', () => {
   const soft = actions.filter(
     (a) => a.rule === 'silence' || a.rule === 'plan-stale' || a.rule === 'long-turn',
   );
-  assert.equal(soft.length, DEFAULT_CONFIG.maxSoftRemindersPerTurn, '一轮里的软提醒应当被夹到上限');
-  assert.equal(w.snapshot().softRemindersThisTurn, DEFAULT_CONFIG.maxSoftRemindersPerTurn);
+  assert.ok(
+    soft.length <= DEFAULT_CONFIG.maxSoftRemindersPerTurn,
+    `一轮里软提醒 ${soft.length} 条，超过总闸 ${DEFAULT_CONFIG.maxSoftRemindersPerTurn}`,
+  );
+  const byRule = {};
+  for (const a of soft) byRule[a.rule] = (byRule[a.rule] || 0) + 1;
+  assert.ok((byRule.silence || 0) <= DEFAULT_CONFIG.maxSilencePerTurn, '沉默提醒受同类上限约束');
+  assert.ok((byRule['plan-stale'] || 0) <= DEFAULT_CONFIG.maxPlanPerTurn, '清单提醒受同类上限约束');
+  assert.ok((byRule['long-turn'] || 0) <= DEFAULT_CONFIG.maxLongTurnPerTurn, '单轮过长受同类上限约束');
 });
 
-test('每会话软提醒有上限：多轮累计到 24 条后不再提醒', () => {
+test('超长单轮：同类提醒会被分类上限夹住，不会无限刷', () => {
+  const w = createWatcher();
+  const actions = run(w, [
+    { type: 'turn/start', data: { turn: 1 }, time: 1 },
+    ...manyToolCalls(2000),
+  ]);
+  assert.equal(
+    actions.filter((a) => a.rule === 'silence').length,
+    DEFAULT_CONFIG.maxSilencePerTurn,
+    '超长单轮的沉默提醒应被夹到同类上限',
+  );
+});
+
+test('每会话软提醒有上限：多轮累计到会话配额后不再提醒', () => {
   const w = createWatcher();
   const records = [];
   for (let turn = 1; turn <= 30; turn += 1) {
@@ -316,17 +336,17 @@ test('会话压缩后不按旧账补提醒：要重新攒够阈值', () => {
   const w = createWatcher();
   run(w, [
     { type: 'turn/start', data: { turn: 1 }, time: 1 },
-    ...manyToolCalls(20),
+    ...manyToolCalls(12),
     { type: 'compaction/start', data: {}, time: 2 },
   ]);
-  const justAfter = run(w, manyToolCalls(19, 30));
+  const justAfter = run(w, manyToolCalls(11, 30));
   assert.equal(
     justAfter.filter((a) => a.rule === 'silence').length,
     0,
-    '压缩后 19 次还不够，不该立刻再提醒',
+    '压缩后 11 次还不够，不该立刻再提醒',
   );
   const more = run(w, manyToolCalls(1, 50));
-  assert.equal(more.filter((a) => a.rule === 'silence').length, 1, '再攒到第 20 次才提醒');
+  assert.equal(more.filter((a) => a.rule === 'silence').length, 1, '再攒到第 12 次才提醒');
 });
 
 test('提醒文案变短了：单条不超过 110 字', () => {

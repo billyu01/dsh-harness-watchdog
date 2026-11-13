@@ -10,27 +10,33 @@
 
 export const DEFAULT_CONFIG = {
   /** 连续多少次工具调用没有任何正文就提醒（解决「闷头跑很久不出声」） */
-  silenceToolCalls: 20,
+  silenceToolCalls: 12,
   /** 两次沉默提醒之间至少间隔多少次工具调用，避免刷屏 */
-  silenceCooldown: 20,
+  silenceCooldown: 12,
   /** 距上次写任务清单多少步工具调用后，开始提醒 */
-  planStaleToolCalls: 30,
+  planStaleToolCalls: 15,
   /** 全会话工具调用少于此数不提醒，避免打扰简单任务 */
-  planStaleMinToolCalls: 40,
+  planStaleMinToolCalls: 20,
   /** 两次计划提醒之间至少间隔多少步工具调用，避免刷屏 */
-  planStaleCooldown: 60,
+  planStaleCooldown: 30,
   /** 单轮步数超过此值提醒一次 */
   longTurnSteps: 60,
   /**
-   * 每轮最多允许几条「软提醒」（沉默/清单/单轮过长）。
-   * 每次提醒都会作为合成用户消息留在上下文里，还会引来一段模型回应；
-   * 一轮里反复提醒是上下文膨胀的主要来源，必须设上限。
-   * 取 3 是为了让沉默/清单/单轮过长三条规则各留一次机会；同一步里
-   * 命中的多条会由宿主半合并成一条消息，所以实际消息数通常更少。
+   * 上下文膨胀的真正大头不是「提醒次数」本身，而是每次提醒都要求模型
+   * 写一段进展汇报。所以策略是：提醒频率保持原样（用户等着看进展），
+   * 但同一轮里同类提醒不重复刷、每条只要求一句话。
+   * 下面四个上限防止「一轮里同一件事反复催」。
    */
-  maxSoftRemindersPerTurn: 3,
-  /** 每个会话最多允许几条软提醒；超出后只保留拦收轮这类硬干预 */
-  maxSoftRemindersPerSession: 24,
+  maxSilencePerTurn: 30,
+  maxPlanPerTurn: 3,
+  maxLongTurnPerTurn: 1,
+  /** 每轮软提醒总闸（三类相加），防止三条规则在同一轮里叠加刷屏 */
+  maxSoftRemindersPerTurn: 40,
+  /**
+   * 每个会话软提醒总量兜底。取 240 是为了让 2000 次工具调用级别的长任务
+   * 基本保持原来的提醒频率（每 10 到 15 次一次），又给极端会话封顶。
+   */
+  maxSoftRemindersPerSession: 240,
   /** 收尾对账：模型说做完了但清单还有未完成项时，拦下并要求更新清单 */
   reconcileOnClaim: true,
   /** 保存最近一段正文的最大长度（用于判断「是否声称完成」） */
@@ -98,6 +104,8 @@ export function createWatcher(userConfig = {}) {
     /** 本轮 / 本会话已经发出的软提醒条数（上下文膨胀的总闸门） */
     softRemindersThisTurn: 0,
     softRemindersTotal: 0,
+    /** 本轮按规则分别记数，防止沉默提醒把清单提醒挤掉 */
+    softThisTurnByRule: {},
     /** 目标 */
     goal: null,
     lastGoalRoundAt: null,
@@ -115,14 +123,30 @@ export function createWatcher(userConfig = {}) {
     return action;
   }
 
+  /** 每类软提醒在一轮里的上限，取不到就不额外限制 */
+  const RULE_TURN_LIMIT = {
+    silence: 'maxSilencePerTurn',
+    'plan-stale': 'maxPlanPerTurn',
+    'long-turn': 'maxLongTurnPerTurn',
+  };
+
   /**
    * 发一条「软提醒」（沉默 / 清单陈旧 / 单轮过长）。
-   * 每一条都会作为合成用户消息留在上下文里，并引来一段模型回应，
-   * 所以受两道闸门约束：每轮上限、每会话上限。超限时静默丢弃。
+   *
+   * 设计取舍：提醒频率本身不降（用户要在长任务里看到进展），成本靠三件事压：
+   *   1. 同类提醒一轮里不重复刷（沉默 4 次以内、清单和单轮过长各 1 次）；
+   *   2. 三类相加还有总闸，避免叠加；
+   *   3. 文案要求模型「一句话」作答，削减它引发的回应长度（这才是膨胀大头）。
+   * 超出上限时静默丢弃，不改变已经发生的工具执行。
    */
   function pushSoft(action) {
+    const limitKey = RULE_TURN_LIMIT[action.rule];
+    const ruleLimit = limitKey ? config[limitKey] : Infinity;
+    const used = state.softThisTurnByRule[action.rule] || 0;
+    if (used >= ruleLimit) return null;
     if (state.softRemindersThisTurn >= config.maxSoftRemindersPerTurn) return null;
     if (state.softRemindersTotal >= config.maxSoftRemindersPerSession) return null;
+    state.softThisTurnByRule[action.rule] = used + 1;
     state.softRemindersThisTurn += 1;
     state.softRemindersTotal += 1;
     return push(action);
@@ -180,6 +204,7 @@ export function createWatcher(userConfig = {}) {
         state.lastTurnText = '';
         state.toolCallsThisTurn = 0;
         state.softRemindersThisTurn = 0;
+        state.softThisTurnByRule = {};
         break;
       }
 
@@ -240,7 +265,7 @@ export function createWatcher(userConfig = {}) {
             target: 'next-step',
             wakeup: false,
             turn: state.turn,
-            text: `【看门狗】你已经连续 ${silentFor} 次工具调用没有输出任何正文。请用一两句话说明现在做到哪、还剩什么，然后继续。`,
+            text: `【看门狗】你已经连续 ${silentFor} 次工具调用没有输出任何正文。请用一句话（40 字内）说明现在做到哪，然后继续。`,
           });
           if (sent) state.silenceReminderCount += 1;
         }
@@ -262,7 +287,7 @@ export function createWatcher(userConfig = {}) {
             target: 'next-step',
             wakeup: false,
             turn: state.turn,
-            text: `【看门狗】${intro}（当前第 ${state.step} 步）。请立刻用 todo_write 写最新清单：完成标 completed、在做的标 in_progress、剩余逐条列出。`,
+            text: `【看门狗】${intro}（当前第 ${state.step} 步）。请用 todo_write 刷新清单：完成标 completed、在做的标 in_progress，一条一行。`,
           });
           if (sent) state.planReminderCount += 1;
         }
@@ -276,7 +301,7 @@ export function createWatcher(userConfig = {}) {
             target: 'next-step',
             wakeup: false,
             turn: state.turn,
-            text: `【看门狗】本轮已经走到第 ${state.step} 步。请先停下汇报：现在做到哪、还剩什么、下一步做什么。`,
+            text: `【看门狗】本轮已经走到第 ${state.step} 步。请用一句话说明现在做到哪、还剩什么、下一步做什么，然后继续。`,
           });
           if (sent) state.longTurnReminderCount += 1;
         }

@@ -336,7 +336,7 @@ test('沉默过久：连续工具调用没有正文时，宿主半会注入一�
     type: 'assistant/message',
     data: { message: { content: [{ type: 'text', text: '我先看一下仓库结构' }] } },
   })
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }
@@ -448,16 +448,16 @@ test('同一步命中多条提醒时合并成一条消息，减少上下文条�
 })
 
 test('上下文压力过高时不再投软提醒', async () => {
-  const ctx = fakeCtx({ tokenMeter: { contextPressure: () => ({ projectedTokens: 900, contextWindow: 1000 }) } })
+  const ctx = fakeCtx({ tokenMeter: { contextPressure: () => ({ projectedTokens: 950, contextWindow: 1000 }) } })
   apply(ctx)
   const agent = fakeAgent('s-full')
   ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }
   const out = await ctx.postExecute({ agent, name: 'bash' }, () => ({ kind: 'continue' }))
-  assert.equal(out.additionalContexts, undefined, '上下文已用 90% 时不该再往里塞提醒')
+  assert.equal(out.additionalContexts, undefined, '上下文已用 95% 时不该再往里塞提醒')
 })
 
 test('上下文压力正常时照常投递', async () => {
@@ -465,7 +465,7 @@ test('上下文压力正常时照常投递', async () => {
   apply(ctx)
   const agent = fakeAgent('s-roomy')
   ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }
@@ -478,7 +478,7 @@ test('水位探测接口不存在或报错时，照常提醒，不因探测失�
   apply(ctx)
   const agent = fakeAgent('s-boom')
   ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < 12; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }
