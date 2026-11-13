@@ -8,15 +8,15 @@
 
 | 规则 | 触发条件 | 动作 | 使用的钩子 |
 |---|---|---|---|
-| **沉默过久** | 连续 12 次工具调用没有任何正文 | 注入提醒，要求说明「做到哪、还剩什么、为什么还没结束」 | `tools/post-execute` |
-| **计划陈旧** | 距上次写任务清单 ≥ 15 次工具调用（且全会话已 ≥ 20 次） | 注入提醒，要求用 `todo_write` 重写清单 | `tools/post-execute` |
+| **沉默过久** | 连续 20 次工具调用没有任何正文 | 注入提醒，要求说明「做到哪、还剩什么、为什么还没结束」 | `tools/post-execute` |
+| **计划陈旧** | 距上次写任务清单 ≥ 30 次工具调用（且全会话已 ≥ 40 次） | 注入提醒，要求用 `todo_write` 重写清单 | `tools/post-execute` |
 | **拦收轮（硬干预）** | 本轮已 ≥ 8 次工具调用、清单已 ≥ 15 次没更新，且这一轮即将结束 | 用 `agent.steer()` 把这一轮拉回来，清单不刷新就不让它结束 | `agent/turn-stopping` |
 | **收尾对账（硬干预）** | 模型在回复里**声称任务已完成**，但任务清单里还有未完成项 | 拦下这一轮，要求把清单改成真实状态；确实没做/有意不做的保持未完成并说明原因 | `agent/turn-stopping` |
 | **单轮过长** | 单轮 ≥ 60 步 | 提醒一次，要求先汇报再继续 | `tools/post-execute` |
 | **目标自动救援** | 目标因**轮次额度用尽**被框架写成「阻塞」 | 自动把额度改大再恢复，同一目标最多 3 次 | `goals` 服务 `edit` / `resume` |
 | **目标自动重新武装** | 目标「进行中」但自动续跑被悄悄停用 | 自动重新开启，同一目标最多 5 次 | `goals` 服务 `resume` |
 
-提醒只往模型上下文里追加一段合成用户消息，**不会改动会话日志**。
+提醒只往模型上下文里追加一段合成用户消息，**不改写任何已有记录**。这条消息会以带来源标记的合成用户消息留在会话里，所以提醒的数量和长度受专门限制（见「上下文控制」一节）。
 
 ## 安装
 
@@ -74,7 +74,7 @@ dsh plugin --profile desktop add github:billyu01/dsh-harness-watchdog
 ## 验证
 
 ```bash
-# 单元与集成测试（54 个用例，不依赖真实 DSH）
+# 单元与集成测试（68 个用例，不依赖真实 DSH）
 node --test test/policy.test.mjs test/intervene.test.mjs test/host.test.mjs
 
 # 装载后查看状态（默认端口 3080；桌面版端口以实际为准）
@@ -82,16 +82,32 @@ curl -s http://127.0.0.1:3080/harness-watchdog/status | head -c 400
 # 返回里没有 version 字段说明跑的还是旧模块，需要重启
 ```
 
+## 上下文控制
+
+每条提醒都会变成一条合成用户消息留在上下文里，还会引来模型一段回应。提醒太频繁时，上下文会被自己的提醒撑大。插件用五道闸门控制这件事：
+
+| 闸门 | 默认 | 作用 |
+|---|---|---|
+| 每轮软提醒上限 | 3 条 | 一轮里最多提醒几次 |
+| 每会话软提醒上限 | 24 条 | 长会话累计到上限后，只保留拦收轮这类硬干预 |
+| 同批合并 | 开 | 同一步命中的多条提醒合并成一条消息 |
+| 上下文水位保护 | 75% | 上下文占用超过 75% 时不投软提醒；依赖 DSH 的 `tokenMeter` 服务，拿不到就照常工作 |
+| 压缩后重新计时 | 开 | 会话压缩后重新攒阈值，不按旧账补提醒 |
+
+「软提醒」指沉默、清单陈旧、单轮过长这三类；拦收轮、收尾对账、目标救援这类硬干预不受影响。被水位保护挡下的条数记在状态接口的 `suppressed` 字段里。
+
 ## 调阈值
 
 `src/policy.js` 的 `DEFAULT_CONFIG` 与 `src/intervene.js` 的 `DEFAULT_INTERVENE`：
 
 | 字段 | 默认 | 含义 |
 |---|---|---|
-| `silenceToolCalls` | 12 | 连续多少次工具调用没正文就提醒 |
-| `silenceCooldown` | 12 | 两次沉默提醒的最小间隔 |
-| `planStaleToolCalls` / `planStaleCooldown` | 15 / 30 | 清单陈旧阈值与冷却 |
+| `silenceToolCalls` | 20 | 连续多少次工具调用没正文就提醒 |
+| `silenceCooldown` | 20 | 两次沉默提醒的最小间隔 |
+| `planStaleToolCalls` / `planStaleMinToolCalls` / `planStaleCooldown` | 30 / 40 / 60 | 清单陈旧阈值、生效门槛与冷却 |
 | `longTurnSteps` | 60 | 单轮步数提醒阈值 |
+| `maxSoftRemindersPerTurn` / `maxSoftRemindersPerSession` | 3 / 24 | 每轮、每会话软提醒上限 |
+| `contextPressureSoftStop`（宿主配置，不是 `DEFAULT_CONFIG`） | 0.75 | 上下文占用超过该比例就不再投软提醒 |
 | `forcePlanMinToolCalls` / `forcePlanStaleToolCalls` | 8 / 15 | 拦收轮的门槛 |
 | `reconcileOnClaim` / `claimPatterns` | 开 / 内置措辞 | 收尾对账：判定「声称完成」的开关与措辞 |
 | `maxRescuesPerGoal` / `maxRearmsPerGoal` | 3 / 5 | 目标干预次数上限 |

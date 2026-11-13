@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, name, inject } from '../src/index.js'
 
-function fakeCtx({ goals } = {}) {
+function fakeCtx({ goals, tokenMeter } = {}) {
   const handlers = new Map()
   const routes = new Map()
   const effects = []
@@ -19,6 +19,7 @@ function fakeCtx({ goals } = {}) {
   }
   const services = { webServer }
   if (goals !== undefined) services.goals = goals
+  if (tokenMeter !== undefined) services.tokenMeter = tokenMeter
   const registered = []
   return {
     registered,
@@ -92,10 +93,11 @@ test('没有待办时，工具调用后的决策原样透传', async () => {
 
 test('清单陈旧后，工具调用后会注入一条看门狗提醒', async () => {
   const ctx = fakeCtx()
-  apply(ctx)
+  // 只测清单规则：关掉沉默与单轮过长，避免同一步命中多条被合并
+  apply(ctx, { silenceToolCalls: 1000, longTurnSteps: 1000 })
   const agent = fakeAgent('s1')
   ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
-  for (let i = 0; i < 20; i += 1) {
+  for (let i = 0; i < 42; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }
@@ -334,7 +336,7 @@ test('沉默过久：连续工具调用没有正文时，宿主半会注入一�
     type: 'assistant/message',
     data: { message: { content: [{ type: 'text', text: '我先看一下仓库结构' }] } },
   })
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = 0; i < 20; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }
@@ -425,4 +427,61 @@ test('任务做完了但清单没更新：收轮时拦下并要求对账（真�
   const msg = agent.steered[0]
   assert.equal(msg.source.summary, 'force-plan')
   assert.match(msg.content[0].text, /还有 3 项没有标成完成/)
+})
+
+// ── 上下文膨胀防线：同批合并 + 上下文水位保护 ──────────────────────────
+
+test('同一步命中多条提醒时合并成一条消息，减少上下文条目', async () => {
+  const ctx = fakeCtx()
+  apply(ctx, { longTurnSteps: 1000 })
+  const agent = fakeAgent('s-merge')
+  ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
+  for (let i = 0; i < 42; i += 1) {
+    ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
+    ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
+  }
+  const out = await ctx.postExecute({ agent, name: 'bash' }, () => ({ kind: 'continue' }))
+  assert.equal(out.additionalContexts.length, 1, '同一批提醒只能产生一条消息')
+  const text = out.additionalContexts[0].content[0].text
+  assert.match(text, /没有输出任何正文/)
+  assert.match(text, /todo_write/)
+})
+
+test('上下文压力过高时不再投软提醒', async () => {
+  const ctx = fakeCtx({ tokenMeter: { contextPressure: () => ({ projectedTokens: 900, contextWindow: 1000 }) } })
+  apply(ctx)
+  const agent = fakeAgent('s-full')
+  ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
+  for (let i = 0; i < 20; i += 1) {
+    ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
+    ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
+  }
+  const out = await ctx.postExecute({ agent, name: 'bash' }, () => ({ kind: 'continue' }))
+  assert.equal(out.additionalContexts, undefined, '上下文已用 90% 时不该再往里塞提醒')
+})
+
+test('上下文压力正常时照常投递', async () => {
+  const ctx = fakeCtx({ tokenMeter: { contextPressure: () => ({ projectedTokens: 300, contextWindow: 1000 }) } })
+  apply(ctx)
+  const agent = fakeAgent('s-roomy')
+  ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
+  for (let i = 0; i < 20; i += 1) {
+    ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
+    ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
+  }
+  const out = await ctx.postExecute({ agent, name: 'bash' }, () => ({ kind: 'continue' }))
+  assert.equal(out.additionalContexts.length, 1)
+})
+
+test('水位探测接口不存在或报错时，照常提醒，不因探测失败而停摆', async () => {
+  const ctx = fakeCtx({ tokenMeter: { contextPressure() { throw new Error('boom') } } })
+  apply(ctx)
+  const agent = fakeAgent('s-boom')
+  ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
+  for (let i = 0; i < 20; i += 1) {
+    ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
+    ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
+  }
+  const out = await ctx.postExecute({ agent, name: 'bash' }, () => ({ kind: 'continue' }))
+  assert.equal(out.additionalContexts.length, 1)
 })

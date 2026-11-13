@@ -10,17 +10,27 @@
 
 export const DEFAULT_CONFIG = {
   /** 连续多少次工具调用没有任何正文就提醒（解决「闷头跑很久不出声」） */
-  silenceToolCalls: 12,
+  silenceToolCalls: 20,
   /** 两次沉默提醒之间至少间隔多少次工具调用，避免刷屏 */
-  silenceCooldown: 12,
+  silenceCooldown: 20,
   /** 距上次写任务清单多少步工具调用后，开始提醒 */
-  planStaleToolCalls: 15,
+  planStaleToolCalls: 30,
   /** 全会话工具调用少于此数不提醒，避免打扰简单任务 */
-  planStaleMinToolCalls: 20,
+  planStaleMinToolCalls: 40,
   /** 两次计划提醒之间至少间隔多少步工具调用，避免刷屏 */
-  planStaleCooldown: 30,
+  planStaleCooldown: 60,
   /** 单轮步数超过此值提醒一次 */
   longTurnSteps: 60,
+  /**
+   * 每轮最多允许几条「软提醒」（沉默/清单/单轮过长）。
+   * 每次提醒都会作为合成用户消息留在上下文里，还会引来一段模型回应；
+   * 一轮里反复提醒是上下文膨胀的主要来源，必须设上限。
+   * 取 3 是为了让沉默/清单/单轮过长三条规则各留一次机会；同一步里
+   * 命中的多条会由宿主半合并成一条消息，所以实际消息数通常更少。
+   */
+  maxSoftRemindersPerTurn: 3,
+  /** 每个会话最多允许几条软提醒；超出后只保留拦收轮这类硬干预 */
+  maxSoftRemindersPerSession: 24,
   /** 收尾对账：模型说做完了但清单还有未完成项时，拦下并要求更新清单 */
   reconcileOnClaim: true,
   /** 保存最近一段正文的最大长度（用于判断「是否声称完成」） */
@@ -85,6 +95,9 @@ export function createWatcher(userConfig = {}) {
     lastTextAtToolCalls: 0,
     lastSilenceReminderAtToolCalls: null,
     silenceReminderCount: 0,
+    /** 本轮 / 本会话已经发出的软提醒条数（上下文膨胀的总闸门） */
+    softRemindersThisTurn: 0,
+    softRemindersTotal: 0,
     /** 目标 */
     goal: null,
     lastGoalRoundAt: null,
@@ -100,6 +113,19 @@ export function createWatcher(userConfig = {}) {
   function push(action) {
     actions.push(action);
     return action;
+  }
+
+  /**
+   * 发一条「软提醒」（沉默 / 清单陈旧 / 单轮过长）。
+   * 每一条都会作为合成用户消息留在上下文里，并引来一段模型回应，
+   * 所以受两道闸门约束：每轮上限、每会话上限。超限时静默丢弃。
+   */
+  function pushSoft(action) {
+    if (state.softRemindersThisTurn >= config.maxSoftRemindersPerTurn) return null;
+    if (state.softRemindersTotal >= config.maxSoftRemindersPerSession) return null;
+    state.softRemindersThisTurn += 1;
+    state.softRemindersTotal += 1;
+    return push(action);
   }
 
   function goalStatus(now) {
@@ -153,6 +179,17 @@ export function createWatcher(userConfig = {}) {
         state.turnHadText = false;
         state.lastTurnText = '';
         state.toolCallsThisTurn = 0;
+        state.softRemindersThisTurn = 0;
+        break;
+      }
+
+      case 'compaction/start': {
+        // 会话压缩后，上下文里的旧内容已经不在了，旧的调用计数也不再代表
+        // 「用户已经等了多久」。把三个计时基准对齐到当前计数，避免压缩刚结束
+        // 就按旧账补一条提醒；之后要重新攒够阈值才会再提醒。
+        state.lastTextAtToolCalls = state.toolCalls;
+        state.lastSilenceReminderAtToolCalls = state.toolCalls;
+        state.lastPlanReminderAtToolCalls = state.toolCalls;
         break;
       }
 
@@ -197,17 +234,15 @@ export function createWatcher(userConfig = {}) {
           state.toolCalls - state.lastSilenceReminderAtToolCalls >= config.silenceCooldown;
         if (silentFor >= config.silenceToolCalls && silenceCooled) {
           state.lastSilenceReminderAtToolCalls = state.toolCalls;
-          state.silenceReminderCount += 1;
-          push({
+          const sent = pushSoft({
             kind: 'remind',
             rule: 'silence',
             target: 'next-step',
             wakeup: false,
             turn: state.turn,
-            text:
-              `【看门狗】你已经连续 ${silentFor} 次工具调用没有输出任何正文，用户在这段时间里看不到任何进展。` +
-              `请立刻用一到两句话说明：现在做到哪、还剩什么、为什么还没结束。说完再继续调用工具。`,
+            text: `【看门狗】你已经连续 ${silentFor} 次工具调用没有输出任何正文。请用一两句话说明现在做到哪、还剩什么，然后继续。`,
           });
+          if (sent) state.silenceReminderCount += 1;
         }
 
         // 规则一：任务清单陈旧
@@ -218,37 +253,32 @@ export function createWatcher(userConfig = {}) {
           state.toolCalls - state.lastPlanReminderAtToolCalls >= config.planStaleCooldown;
         if (everEnough && stale && cooled) {
           state.lastPlanReminderAtToolCalls = state.toolCalls;
-          state.planReminderCount += 1;
           const intro = state.todoWritten
             ? `任务清单已经 ${state.toolCallsSinceTodo} 次工具调用没有更新`
             : `这个会话还没有写过任务清单`;
-          push({
+          const sent = pushSoft({
             kind: 'remind',
             rule: 'plan-stale',
             target: 'next-step',
             wakeup: false,
             turn: state.turn,
-            text:
-              `【看门狗】${intro}（看门狗接管后已记录 ${state.toolCalls} 次工具调用，当前第 ${state.step} 步）。` +
-              `请立即用 todo_write 写一份最新的任务清单：完成的标 completed、正在做的标 in_progress、` +
-              `剩余工作逐条列出，并在本轮结束前保持更新。`,
+            text: `【看门狗】${intro}（当前第 ${state.step} 步）。请立刻用 todo_write 写最新清单：完成标 completed、在做的标 in_progress、剩余逐条列出。`,
           });
+          if (sent) state.planReminderCount += 1;
         }
 
         // 规则二：单轮过长
         if (state.step >= config.longTurnSteps && state.longTurnRemindedTurn !== state.turn) {
           state.longTurnRemindedTurn = state.turn;
-          state.longTurnReminderCount += 1;
-          push({
+          const sent = pushSoft({
             kind: 'remind',
             rule: 'long-turn',
             target: 'next-step',
             wakeup: false,
             turn: state.turn,
-            text:
-              `【看门狗】本轮已经走到第 ${state.step} 步（看门狗接管后记录到 ${state.toolCalls} 次工具调用）。` +
-              `请先停下来用一段话汇报：现在做到哪、还剩什么、下一步做什么，然后再决定是否继续。`,
+            text: `【看门狗】本轮已经走到第 ${state.step} 步。请先停下汇报：现在做到哪、还剩什么、下一步做什么。`,
           });
+          if (sent) state.longTurnReminderCount += 1;
         }
 
         // 记录后台任务启动（bash 的 background 形式等交给 host 半补充）
@@ -429,6 +459,8 @@ export function createWatcher(userConfig = {}) {
       planReminderCount: state.planReminderCount,
       longTurnReminderCount: state.longTurnReminderCount,
       silenceReminderCount: state.silenceReminderCount,
+      softRemindersThisTurn: state.softRemindersThisTurn,
+      softRemindersTotal: state.softRemindersTotal,
       silentForToolCalls: state.toolCalls - state.lastTextAtToolCalls,
       turnElapsedMs: state.turnStartedAt ? now - state.turnStartedAt : 0,
       goal: gs,

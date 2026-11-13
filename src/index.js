@@ -17,7 +17,8 @@
  *
  * 设计底线（用户「不要影响已有正常功能」的硬要求）：
  *   - 不 import 任何 @deepseek-ai/* 包（profile 目录解析不到）。
- *   - 不改会话记录、不注册会话投影、不动别人的配置。
+ *   - 只追加提醒，不改写任何已有会话记录；提醒本身会成为一条合成用户消息，
+ *     所以数量和长度都必须克制（见 src/policy.js 的两道软提醒闸门）。
  *   - 一切异常都吞掉并记账，绝不让看门狗自身出错打断会话。
  */
 import { randomUUID } from 'node:crypto'
@@ -37,7 +38,7 @@ export const inject = ['webServer']
  * 插件版本。状态接口会把它带出来，用来确认「改了源码之后有没有真的热生效」——
  * 这个包不在 HMR 的监听目录里，改完源码后靠这个字段判断。
  */
-const WATCHDOG_VERSION = '0.3.1'
+const WATCHDOG_VERSION = '0.3.2'
 
 /** 状态保留多久没有活动就丢弃（毫秒）。 */
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000
@@ -62,13 +63,16 @@ function json(res, status, value) {
 }
 
 /** 一条状态记录：一个会话一个 watcher，外加它最近一次动作的时间。 */
-function makeEntry() {
+function makeEntry(watcherConfig = {}) {
   return {
-    watcher: createWatcher(),
+    watcher: createWatcher(watcherConfig),
     lastActivityAt: 0,
     /** 待投递的提醒（在下一次工具调用之后注入） */
     queue: [],
+    /** 已投递的提醒条数 */
     delivered: 0,
+    /** 因为上下文压力过高而被主动丢掉的提醒条数 */
+    suppressed: 0,
     lastDeliveredAt: null,
     /** 这个会话对应的活 agent，动手时要用 */
     agent: null,
@@ -88,6 +92,31 @@ function actionToMessage(action) {
     content: [{ type: 'text', text: action.text }],
     source: { kind: 'harness-watchdog', form: 'notice', summary: action.rule },
   })
+}
+
+/**
+ * 读当前会话的上下文压力（provider 报的 prompt 大小 ÷ 路由容量）。
+ *
+ * DSH 的 token-meter 服务用 `ctx.tokenMeter.contextPressure(session)` 同步给出
+ * `{ pressureTokens, projectedTokens, contextWindow }`。这个服务不是必备依赖：
+ * 拿不到、字段缺失、接口变化都只返回 null，让调用方照旧工作，绝不因为探测
+ * 失败而放弃提醒。
+ *
+ * @returns {number|null} 0..1 之间的占用比例；无法判断时 null
+ */
+function contextPressureRatio(ctx, session) {
+  try {
+    const meter = typeof ctx.get === 'function' ? ctx.get('tokenMeter') : undefined
+    if (!meter || typeof meter.contextPressure !== 'function') return null
+    const view = meter.contextPressure(session)
+    if (!view || typeof view !== 'object') return null
+    const used = Number.isFinite(view.projectedTokens) ? view.projectedTokens : view.pressureTokens
+    const cap = view.contextWindow
+    if (!Number.isFinite(used) || !Number.isFinite(cap) || cap <= 0) return null
+    return used / cap
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -168,7 +197,7 @@ export function apply(ctx, config = {}) {
     const id = session && session.id ? session.id : String(session)
     let entry = sessions.get(id)
     if (!entry) {
-      entry = makeEntry()
+      entry = makeEntry(config)
       sessions.set(id, entry)
     }
     return entry
@@ -236,9 +265,31 @@ export function apply(ctx, config = {}) {
       if (!entry || entry.queue.length === 0) return downstream
 
       const pending = entry.queue.splice(0, entry.queue.length)
-      const contexts = pending.map(actionToMessage)
-      if (contexts.length === 0) return downstream
-      entry.delivered += contexts.length
+      if (pending.length === 0) return downstream
+
+      // 上下文压力过高时不再往里塞软提醒：每条提醒都会永久留在上下文里，
+      // 还会引来一段模型回应，越满越应该闭嘴。动手之后必须说明的通知保留。
+      const pressure = contextPressureRatio(ctx, session)
+      const softStop = Number.isFinite(config.contextPressureSoftStop)
+        ? config.contextPressureSoftStop
+        : 0.75
+      const keep =
+        pressure !== null && pressure >= softStop
+          ? pending.filter((action) => action.kind !== 'remind')
+          : pending
+      entry.suppressed += pending.length - keep.length
+      if (keep.length === 0) return downstream
+
+      // 同一批多条提醒合并成一条消息：条数比字数更费上下文。
+      const context =
+        keep.length === 1
+          ? actionToMessage(keep[0])
+          : actionToMessage({
+              rule: keep.map((action) => action.rule).join('+'),
+              text: keep.map((action) => action.text).join('\n'),
+            })
+      const contexts = [context]
+      entry.delivered += 1
       entry.lastDeliveredAt = Date.now()
 
       const tail = Array.isArray(downstream.additionalContexts) ? downstream.additionalContexts : []
@@ -376,6 +427,7 @@ export function apply(ctx, config = {}) {
                   sessionId: id,
                   ...entry.watcher.snapshot(now),
                   delivered: entry.delivered,
+                  suppressed: entry.suppressed,
                   lastDeliveredAt: entry.lastDeliveredAt,
                   idleMs: now - entry.lastActivityAt,
                   interventions: entry.interventions,
