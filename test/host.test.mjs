@@ -329,14 +329,15 @@ test('没有 webServer 服务时插件照样能加载', () => {
 
 test('沉默过久：连续工具调用没有正文时，宿主半会注入一条可见提醒', async () => {
   const ctx = fakeCtx()
-  apply(ctx)
+  // 只测沉默规则：关掉清单提醒，避免第 20 次同时命中两条被合并
+  apply(ctx, { planStaleMinToolCalls: 1000, longTurnSteps: 1000 })
   const agent = fakeAgent('s-silence')
   ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
   ctx.fire('session/event', agent.session, {
     type: 'assistant/message',
     data: { message: { content: [{ type: 'text', text: '我先看一下仓库结构' }] } },
   })
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = 0; i < 20; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }
@@ -452,7 +453,7 @@ test('上下文压力过高时不再投软提醒', async () => {
   apply(ctx)
   const agent = fakeAgent('s-full')
   ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = 0; i < 20; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }
@@ -465,7 +466,7 @@ test('上下文压力正常时照常投递', async () => {
   apply(ctx)
   const agent = fakeAgent('s-roomy')
   ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = 0; i < 20; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }
@@ -478,7 +479,7 @@ test('水位探测接口不存在或报错时，照常提醒，不因探测失�
   apply(ctx)
   const agent = fakeAgent('s-boom')
   ctx.fire('session/event', agent.session, { type: 'turn/start', data: { turn: 1 } })
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = 0; i < 20; i += 1) {
     ctx.fire('session/event', agent.session, { type: 'step/start', data: { step: i + 1 } })
     ctx.fire('session/event', agent.session, { type: 'tool/call', data: { name: 'bash' } })
   }

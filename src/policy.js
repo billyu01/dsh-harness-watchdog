@@ -10,9 +10,9 @@
 
 export const DEFAULT_CONFIG = {
   /** 连续多少次工具调用没有任何正文就提醒（解决「闷头跑很久不出声」） */
-  silenceToolCalls: 12,
+  silenceToolCalls: 20,
   /** 两次沉默提醒之间至少间隔多少次工具调用，避免刷屏 */
-  silenceCooldown: 12,
+  silenceCooldown: 20,
   /** 距上次写任务清单多少步工具调用后，开始提醒 */
   planStaleToolCalls: 15,
   /** 全会话工具调用少于此数不提醒，避免打扰简单任务 */

@@ -38,7 +38,7 @@ export const inject = ['webServer']
  * 插件版本。状态接口会把它带出来，用来确认「改了源码之后有没有真的热生效」——
  * 这个包不在 HMR 的监听目录里，改完源码后靠这个字段判断。
  */
-const WATCHDOG_VERSION = '0.3.3'
+const WATCHDOG_VERSION = '0.3.4'
 
 /** 状态保留多久没有活动就丢弃（毫秒）。 */
 const SESSION_TTL_MS = 6 * 60 * 60 * 1000

@@ -8,7 +8,7 @@
 
 | 规则 | 触发条件 | 动作 | 使用的钩子 |
 |---|---|---|---|
-| **沉默过久** | 连续 12 次工具调用没有任何正文 | 注入提醒，要求说明「做到哪、还剩什么、为什么还没结束」 | `tools/post-execute` |
+| **沉默过久** | 连续 20 次工具调用没有任何正文 | 注入提醒，要求说明「做到哪、还剩什么、为什么还没结束」 | `tools/post-execute` |
 | **计划陈旧** | 距上次写任务清单 ≥ 15 次工具调用（且全会话已 ≥ 20 次） | 注入提醒，要求用 `todo_write` 重写清单 | `tools/post-execute` |
 | **拦收轮（硬干预）** | 本轮已 ≥ 8 次工具调用、清单已 ≥ 15 次没更新，且这一轮即将结束 | 用 `agent.steer()` 把这一轮拉回来，清单不刷新就不让它结束 | `agent/turn-stopping` |
 | **收尾对账（硬干预）** | 模型在回复里**声称任务已完成**，但任务清单里还有未完成项 | 拦下这一轮，要求把清单改成真实状态；确实没做/有意不做的保持未完成并说明原因 | `agent/turn-stopping` |
@@ -104,8 +104,8 @@ curl -s http://127.0.0.1:3080/harness-watchdog/status | head -c 400
 
 | 字段 | 默认 | 含义 |
 |---|---|---|
-| `silenceToolCalls` | 12 | 连续多少次工具调用没正文就提醒 |
-| `silenceCooldown` | 12 | 两次沉默提醒的最小间隔 |
+| `silenceToolCalls` | 20 | 连续多少次工具调用没正文就提醒 |
+| `silenceCooldown` | 20 | 两次沉默提醒的最小间隔 |
 | `planStaleToolCalls` / `planStaleMinToolCalls` / `planStaleCooldown` | 15 / 20 / 30 | 清单陈旧阈值、生效门槛与冷却 |
 | `longTurnSteps` | 60 | 单轮步数提醒阈值 |
 | `maxSilencePerTurn` / `maxPlanPerTurn` / `maxLongTurnPerTurn` | 30 / 3 / 1 | 同类软提醒每轮上限 |
